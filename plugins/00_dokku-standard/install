@@ -2,18 +2,57 @@
 set -eo pipefail; [[ $DOKKU_TRACE ]] && set -x
 
 if [[ ! -f  "$DOKKU_ROOT/HOSTNAME" ]]; then
-    echo $(hostname -f) > $DOKKU_ROOT/HOSTNAME
+  hostname -f > $DOKKU_ROOT/HOSTNAME
+fi
+
+if [[ ! -f  "$DOKKU_ROOT/VHOST" ]]; then
+  [[ $(dig +short "$(< "$DOKKU_ROOT/HOSTNAME")") ]] && cp "$DOKKU_ROOT/HOSTNAME" "$DOKKU_ROOT/VHOST"
 fi
 
 # temporary hack for https://github.com/progrium/dokku/issues/82
 # redeploys all apps after a reboot
-cat<<EOF > /etc/init/dokku-redeploy.conf
+case "$DOKKU_DISTRO" in
+  ubuntu)
+    cat<<EOF > /etc/init/dokku-redeploy.conf
 description "Dokku app redeploy service"
 
-start on (started docker)
+start on filesystem and started docker
 
 script
   sleep 2 # give docker some time
-  sudo -i -u dokku /usr/local/bin/dokku deploy:all
+  sudo -i -u dokku /usr/local/bin/dokku ps:restartall
 end script
 EOF
+    ;;
+
+  opensuse)
+    cat<<EOF > /etc/systemd/system/dokku-redeploy.service
+[Unit]
+Description=Dokku app redeploy service
+After=docker.target
+
+[Service]
+Type=simple
+User=dokku
+ExecStart=/usr/local/bin/dokku ps:restartall
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    ;;
+esac
+
+
+cat<<EOF > /etc/update-motd.d/99-dokku
+#!/bin/sh
+
+if [ ! -f "/home/dokku/HOSTNAME" ]; then
+  echo "\nTo avoid cli-based dokku configuration, use the web installer"
+  echo "Debian-based installs should have this running and available"
+  echo "on port 80. You can also install it via the following commands:"
+  echo ""
+  echo "  cd /root/dokku"
+  echo "  sudo make dokku-installer\n"
+fi
+EOF
+chmod +x /etc/update-motd.d/99-dokku

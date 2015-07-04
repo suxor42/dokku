@@ -1,89 +1,14 @@
 #!/usr/bin/env bash
 set -eo pipefail; [[ $DOKKU_TRACE ]] && set -x
-APP="$1"; PORT="$2"
-WILDCARD_SSL="$DOKKU_ROOT/tls"
-SSL="$DOKKU_ROOT/$APP/tls"
+source "$(dirname $0)/../common/functions"
 
-if [[ -f "$DOKKU_ROOT/VHOST" ]]; then
-  VHOST=$(< "$DOKKU_ROOT/VHOST")
-  SUBDOMAIN=${APP/%\.${VHOST}/}
-  if [[ "$APP" == *.* ]] && [[ "$SUBDOMAIN" == "$APP" ]]; then
-    hostname="${APP/\//-}"
-  else
-    hostname="${APP/\//-}.$VHOST"
-  fi
+APP="$1"
+NO_VHOST=$(dokku config:get $APP NO_VHOST || true)
 
-  if [[ -e "$SSL/server.crt" ]] && [[ -e "$SSL/server.key" ]]; then
-    SSL_INUSE="$SSL"
-    SSL_DIRECTIVES=$(cat <<EOF
-  ssl_certificate     $SSL_INUSE/server.crt;
-  ssl_certificate_key $SSL_INUSE/server.key;
-EOF
-)
-  elif  [[ -e "$WILDCARD_SSL/server.crt" ]] && [[ -e "$WILDCARD_SSL/server.key" ]] && [[ $hostname = `openssl x509 -in $WILDCARD_SSL/server.crt -noout -subject | tr '/' '\n' | grep CN= | cut -c4-` ]]; then
-    SSL_INUSE="$WILDCARD_SSL"
-    SSL_DIRECTIVES=""
-  fi
-
-  # ssl based nginx.conf
-  if [[ -n "$SSL_INUSE" ]]; then
-  cat<<EOF > $DOKKU_ROOT/$APP/nginx.conf
-upstream $APP { server 127.0.0.1:$PORT; }
-server {
-  listen      [::]:80;
-  listen      80;
-  server_name $hostname;
-  return 301 https://\$host\$request_uri;
-}
-
-server {
-  listen      [::]:443 ssl spdy;
-  listen      443 ssl spdy;
-  server_name $hostname;
-$SSL_DIRECTIVES
-
-  keepalive_timeout   70;
-  add_header          Alternate-Protocol  443:npn-spdy/2;
-
-  location    / {
-    proxy_pass  http://$APP;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade \$http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_set_header Host \$http_host;
-    proxy_set_header X-Forwarded-Proto \$scheme;
-    proxy_set_header X-Forwarded-For \$remote_addr;
-    proxy_set_header X-Forwarded-Port \$server_port;
-    proxy_set_header X-Request-Start \$msec;
-  }
-}
-EOF
-
-  echo "https://$hostname" > "$DOKKU_ROOT/$APP/URL"
-else
-# default nginx.conf
-  cat<<EOF > $DOKKU_ROOT/$APP/nginx.conf
-upstream $APP { server 127.0.0.1:$PORT; }
-server {
-  listen      [::]:80;
-  listen      80;
-  server_name $hostname;
-  location    / {
-    proxy_pass  http://$APP;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade \$http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_set_header Host \$http_host;
-    proxy_set_header X-Forwarded-Proto \$scheme;
-    proxy_set_header X-Forwarded-For \$remote_addr;
-    proxy_set_header X-Forwarded-Port \$server_port;
-    proxy_set_header X-Request-Start \$msec;
-  }
-}
-EOF
-
-  echo "http://$hostname" > "$DOKKU_ROOT/$APP/URL"
-  fi
-  pluginhook nginx-pre-reload $APP
-  sudo /etc/init.d/nginx reload > /dev/null
+if [[ -n "$NO_VHOST" ]]; then
+  dokku_log_info1 "NO_VHOST config detected"
+elif [[ ! -f "$DOKKU_ROOT/$APP/VHOST" ]]; then
+  dokku domains:setup $APP
 fi
+
+dokku nginx:build-config $APP
